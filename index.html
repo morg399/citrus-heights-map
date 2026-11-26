@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>Citrus Heights Recycling Zones</title>
+  <link rel="stylesheet" href="lib/leaflet.css" />
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: system-ui, -apple-system, sans-serif; background: #18181b; color: #f4f4f5; }
+    #map { height: 100vh; width: 100vw; background: #d4d4d8; }
+    .today-banner {
+      position: absolute; top: 10px; left: 52px; z-index: 1000;
+      background: rgba(24, 24, 27, 0.94); border: 1px solid #3f3f46;
+      border-radius: 10px; padding: 8px 12px; box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+      font-size: 13px; max-width: calc(100vw - 120px);
+    }
+    .today-banner .title { font-weight: 700; font-size: 14px; }
+    .today-banner .sub { font-size: 11px; color: #a1a1aa; margin-top: 2px; }
+    .panel {
+      position: absolute; top: 10px; right: 10px; z-index: 1000;
+      background: rgba(24, 24, 27, 0.95); border: 1px solid #3f3f46;
+      border-radius: 10px; padding: 10px 12px; width: 245px;
+      max-height: 88vh; overflow-y: auto; box-shadow: 0 4px 14px rgba(0,0,0,0.45);
+      font-size: 13px;
+    }
+    .panel h2 { font-size: 14px; margin-bottom: 8px; color: #fff; display: flex; justify-content: space-between; align-items: center; }
+    .btn-row { display: flex; gap: 4px; margin-bottom: 6px; }
+    button {
+      flex: 1; padding: 6px; border: 1px solid #52525b; border-radius: 6px;
+      background: #27272a; color: #e4e4e7; font-size: 12px; cursor: pointer;
+    }
+    button.active, button:hover { background: #2563eb; border-color: #3b82f6; color: #fff; font-weight: 600; }
+    button.today-btn.active { background: #059669; border-color: #10b981; }
+    input[type="text"] {
+      width: 100%; padding: 6px 8px; margin-bottom: 7px; border-radius: 6px;
+      border: 1px solid #52525b; background: #27272a; color: #f4f4f5; font-size: 12px;
+    }
+    .toggles { border-top: 1px solid #3f3f46; border-bottom: 1px solid #3f3f46; padding: 6px 0; margin-bottom: 8px; }
+    .toggles label, .zone-item { display: flex; align-items: center; gap: 7px; padding: 3px 0; cursor: pointer; }
+    .swatch { width: 13px; height: 13px; border-radius: 3px; display: inline-block; border: 1px solid rgba(255,255,255,0.45); }
+    .locate-btn { width: 100%; margin-top: 6px; background: #0284c7; border-color: #0ea5e9; font-weight: 600; }
+    .collapse-btn { flex: 0; padding: 3px 8px; font-size: 12px; }
+    .panel.collapsed .panel-body { display: none; }
+    .panel.collapsed { width: auto; }
+  </style>
+</head>
+<body>
+  <div id="map"></div>
+  <div class="today-banner">
+    <div class="title" id="todayTitle">Calculating collection day...</div>
+    <div class="sub" id="todaySub"></div>
+  </div>
+  <div class="panel" id="controlPanel">
+    <h2>
+      <span>Zone Controls</span>
+      <button class="collapse-btn" onclick="document.getElementById('controlPanel').classList.toggle('collapsed')">☰</button>
+    </h2>
+    <div class="panel-body">
+      <div class="btn-row">
+        <button id="btnToday" class="today-btn active" onclick="filterMode('TODAY')">Today's</button>
+        <button id="btnAll" onclick="filterMode('ALL')">All (10)</button>
+      </div>
+      <div class="btn-row">
+        <button id="btnA" onclick="filterMode('A')">Group A</button>
+        <button id="btnB" onclick="filterMode('B')">Group B</button>
+      </div>
+      <input type="text" id="streetSearch" placeholder="Filter street (e.g. Greenback)..." oninput="renderLayers()" />
+      <div class="toggles">
+        <label><input type="checkbox" id="chkCity" checked onchange="toggleCityBorder(this.checked)"> Citrus Heights City Limits</label>
+        <label><input type="checkbox" id="chkCells" checked onchange="renderLayers()"> Zone Territories</label>
+        <label><input type="checkbox" id="chkPoints" checked onchange="renderLayers()"> Sampled Parcels</label>
+        <label><input type="checkbox" id="chkBorders" checked onchange="renderLayers()"> Dividing Streets (Yellow)</label>
+      </div>
+      <div id="zoneList"></div>
+      <button class="locate-btn" onclick="locateUser()">📍 My GPS Location</button>
+    </div>
+  </div>
+  <script src="lib/leaflet.js"></script>
+  <script>
+    const ZONES = [
+      { id: "MON-A", label: "Monday A", color: "#D32F2F" },
+      { id: "MON-B", label: "Monday B", color: "#EF9A9A" },
+      { id: "TUE-A", label: "Tuesday A", color: "#F57C00" },
+      { id: "TUE-B", label: "Tuesday B", color: "#FFCC80" },
+      { id: "WED-A", label: "Wednesday A", color: "#388E3C" },
+      { id: "WED-B", label: "Wednesday B", color: "#A5D6A7" },
+      { id: "THU-A", label: "Thursday A", color: "#1976D2" },
+      { id: "THU-B", label: "Thursday B", color: "#90CAF9" },
+      { id: "FRI-A", label: "Friday A", color: "#7B1FA2" },
+      { id: "FRI-B", label: "Friday B", color: "#CE93D8" }
+    ];
+    const DAY_CODES = ["SUN", "MON", "TUE", "WED", "THU", "FRI", "SAT"];
+    const DAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+    const ANCHOR_MONDAY_A = new Date(2026, 10, 23, 0, 0, 0);
+
+    function getEffectiveCollectionInfo() {
+      const now = new Date();
+      const shifted = new Date(now.getTime() - 11 * 60 * 60 * 1000);
+      const effDate = new Date(shifted.getFullYear(), shifted.getMonth(), shifted.getDate());
+      const dow = effDate.getDay();
+      const diffToMon = (dow === 0 ? -6 : 1 - dow);
+      const weekMonday = new Date(effDate.getFullYear(), effDate.getMonth(), effDate.getDate() + diffToMon);
+      const weeksDiff = Math.round((weekMonday - ANCHOR_MONDAY_A) / (7 * 24 * 60 * 60 * 1000));
+      const group = (Math.abs(weeksDiff) % 2 === 0) ? "A" : "B";
+      const isPre11 = now.getHours() < 11;
+      const dateLabel = effDate.toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
+      if (dow === 0 || dow === 6) {
+        return { zoneId: null, title: `No Pickup (${DAY_NAMES[dow]})`, sub: `Effective: ${dateLabel} (11:00 AM rollover)` };
+      }
+      const zoneId = `${DAY_CODES[dow]}-${group}`;
+      return {
+        zoneId,
+        title: `Today's Collection: ${zoneId} (${DAY_NAMES[dow]} ${group})`,
+        sub: isPre11 ? `Showing ${dateLabel} until 11:00 AM` : `Active since 11:00 AM (${dateLabel})`
+      };
+    }
+
+    const map = L.map("map").setView([38.695, -121.285], 13);
+    L.tileLayer("tile_cache/{z}/{x}/{y}.png", {
+      attribution: "&copy; OpenStreetMap contributors",
+      maxNativeZoom: 15, maxZoom: 18
+    }).addTo(map);
+
+    let rawFeatures = [];
+    let cityBorderLayer = null;
+    const activeZones = new Set();
+    const layerGroup = L.layerGroup().addTo(map);
+    let userMarker = null;
+
+    const todayInfo = getEffectiveCollectionInfo();
+    document.getElementById("todayTitle").textContent = todayInfo.title;
+    document.getElementById("todaySub").textContent = todayInfo.sub;
+
+    const zoneListEl = document.getElementById("zoneList");
+    ZONES.forEach(z => {
+      const lbl = document.createElement("label");
+      lbl.className = "zone-item";
+      lbl.innerHTML = `<input type="checkbox" data-zone="${z.id}" onchange="toggleZone('${z.id}', this.checked)"><span class="swatch" style="background:${z.color}"></span><span>${z.id} (${z.label})</span>`;
+      zoneListEl.appendChild(lbl);
+    });
+
+    function toggleCityBorder(show) {
+      if (!cityBorderLayer) return;
+      if (show) cityBorderLayer.addTo(map);
+      else map.removeLayer(cityBorderLayer);
+    }
+
+    function toggleZone(zoneId, isChecked) {
+      if (isChecked) activeZones.add(zoneId);
+      else activeZones.delete(zoneId);
+      renderLayers();
+    }
+
+    function filterMode(mode) {
+      document.querySelectorAll(".btn-row button").forEach(b => b.classList.remove("active"));
+      const btnMap = { TODAY: "btnToday", ALL: "btnAll", A: "btnA", B: "btnB" };
+      if (btnMap[mode]) document.getElementById(btnMap[mode]).classList.add("active");
+      ZONES.forEach(z => {
+        let show = mode === "ALL" ? true : (mode === "A" || mode === "B") ? z.id.endsWith("-" + mode) : (todayInfo.zoneId ? z.id === todayInfo.zoneId : true);
+        if (show) activeZones.add(z.id); else activeZones.delete(z.id);
+        const cb = document.querySelector(`input[data-zone="${z.id}"]`);
+        if (cb) cb.checked = show;
+      });
+      renderLayers();
+    }
+
+    function renderLayers() {
+      layerGroup.clearLayers();
+      const showCells = document.getElementById("chkCells").checked;
+      const showPoints = document.getElementById("chkPoints").checked;
+      const showBorders = document.getElementById("chkBorders").checked;
+      const searchQ = document.getElementById("streetSearch").value.trim().toLowerCase();
+
+      rawFeatures.forEach(feat => {
+        const p = feat.properties;
+        if (!activeZones.has(p.zone)) return;
+        if (searchQ && !(p.address || "").toLowerCase().includes(searchQ)) return;
+        const popupHtml = `<b>${p.address}</b><br>Zone: <b>${p.zone}</b> (${p.zone_title})<br>Street: ${p.street || "N/A"}<br>${p.is_boundary_street ? "<span style='color:#d97706;font-weight:700;'>⚠ Dividing Street</span>" : "Interior Route"}`;
+        if (p.feature_kind === "voronoi_cell" && showCells) {
+          L.geoJSON(feat, {
+            style: {
+              color: (showBorders && p.is_boundary_street) ? "#facc15" : p.color,
+              weight: (showBorders && p.is_boundary_street) ? 1.5 : 0.6,
+              opacity: 0.75, fillColor: p.color, fillOpacity: 0.34
+            }
+          }).bindPopup(popupHtml).addTo(layerGroup);
+        } else if (p.feature_kind === "parcel_sample" && showPoints) {
+          const [lng, lat] = feat.geometry.coordinates;
+          const isB = showBorders && p.is_boundary_street;
+          L.circleMarker([lat, lng], {
+            radius: isB ? 5.5 : 4, fillColor: p.color,
+            color: isB ? "#facc15" : "#18181b", weight: isB ? 2 : 1, fillOpacity: 0.95
+          }).bindPopup(popupHtml).addTo(layerGroup);
+        }
+      });
+    }
+
+    function locateUser() { map.locate({ setView: true, maxZoom: 16 }); }
+    map.on("locationfound", e => {
+      if (userMarker) map.removeLayer(userMarker);
+      userMarker = L.circleMarker(e.latlng, { radius: 8, fillColor: "#10b981", color: "#fff", weight: 2.5, fillOpacity: 1 }).addTo(map).bindPopup("You are here").openPopup();
+    });
+
+    fetch("citrus_heights_city_limits.geojson")
+      .then(r => r.json())
+      .then(cityData => {
+        cityBorderLayer = L.geoJSON(cityData, {
+          style: { color: "#111827", weight: 4, opacity: 0.9, fill: false, dashArray: "8, 4" }
+        }).addTo(map);
+        map.fitBounds(cityBorderLayer.getBounds());
+      });
+
+    fetch("citrus_heights_recycling_10zones.geojson")
+      .then(r => r.json())
+      .then(data => { rawFeatures = data.features || []; filterMode("TODAY"); });
+  </script>
+</body>
+</html>
